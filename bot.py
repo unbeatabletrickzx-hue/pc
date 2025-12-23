@@ -4,8 +4,11 @@ import time
 import sqlite3
 import sys
 import asyncio
+import threading
 from collections import defaultdict, deque
 from typing import Optional, Tuple, Set, Dict
+
+from flask import Flask
 
 from telegram import (
     Update,
@@ -41,6 +44,22 @@ ADMIN_CACHE_TTL = 10 * 60  # 10 minutes
 FLOOD_BUCKETS = defaultdict(lambda: deque(maxlen=20))
 
 LINK_RE = re.compile(r"(https?://|t\.me/|www\.)", re.IGNORECASE)
+
+# -------------------- WEB (for UptimeRobot / Render) --------------------
+web_app = Flask(__name__)
+
+@web_app.get("/")
+def home():
+    return "OK", 200
+
+@web_app.get("/health")
+def health():
+    return "healthy", 200
+
+
+def run_web():
+    port = int(os.getenv("PORT", "10000"))  # Render sets PORT automatically for Web Services
+    web_app.run(host="0.0.0.0", port=port)
 
 
 # -------------------- PYTHON 3.14 EVENT LOOP FIX --------------------
@@ -212,7 +231,7 @@ def extract_command(text: str) -> str:
     return cmd[1:].lower()
 
 
-# -------------------- PM HELP BUTTON (LIKE YOUR SCREENSHOT) --------------------
+# -------------------- PM HELP BUTTON (LIKE SCREENSHOT) --------------------
 def pm_help_button() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("Click me for help!", url=f"https://t.me/{BOT_USERNAME}?start=help")]]
@@ -272,7 +291,6 @@ def help_text_private() -> str:
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # In groups: ANY user gets PM button (like screenshot)
     if is_group(update):
         await update.effective_message.reply_text(
             "Contact me in PM for help!",
@@ -281,13 +299,12 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # In PM: show full help
     await update.effective_message.reply_text(help_text_private())
 
 
 # -------------------- /start (deep links) --------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # In groups: ANY user gets PM button (like screenshot)
+    # In groups: any user gets PM button
     if is_group(update):
         await update.effective_message.reply_text(
             "Contact me in PM for help!",
@@ -344,7 +361,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# -------------------- /admin (allowed for everyone) --------------------
+# -------------------- /admin (allowed for everyone; owner id NOT shown) --------------------
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_group(update):
         await update.effective_message.reply_text("Use /admin inside a group to see the admins.")
@@ -472,6 +489,7 @@ async def handle_private_welcome_text(update: Update, context: ContextTypes.DEFA
     if not user:
         return
 
+    # Verify again
     if not is_owner(user.id):
         try:
             member = await context.bot.get_chat_member(int(chat_id), user.id)
@@ -931,6 +949,9 @@ def main():
 
     init_db()
 
+    # Start web server for Render/UptimeRobot in background thread
+    threading.Thread(target=run_web, daemon=True).start()
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     # Command gate FIRST
@@ -951,7 +972,7 @@ def main():
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CallbackQueryHandler(on_settings_click, pattern=r"^tog:"))
 
-    # welcome setup command: /setup (alias /welcome_setup)
+    # welcome setup
     app.add_handler(CommandHandler("setup", cmd_setup))
     app.add_handler(CommandHandler("welcome_setup", cmd_setup))  # alias
 
